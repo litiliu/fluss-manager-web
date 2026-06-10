@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fluss Manager Web</title>
+  <link rel="icon" href="https://fluss.apache.org/img/logo/svg/colored_logo_notext.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <section id="login-page" class="login-page">
+    <form id="login-form" class="login-card">
+      <img class="login-logo" src="https://fluss.apache.org/img/logo/svg/colored_logo_notext.svg" alt="Apache Fluss">
+      <h1>Fluss Manager Web</h1>
+      <p>Sign in as administrator</p>
+      <input id="login-username" type="text" autocomplete="username" placeholder="Username" value="admin">
+      <input id="login-password" type="password" autocomplete="current-password" placeholder="Password" value="admin">
+      <button type="submit">Sign in</button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+  </section>
+
+  <section id="app-shell" class="app-shell" hidden>
+    <header class="app-topbar">
+      <div class="top-brand">
+        <button id="menu-toggle" class="menu-button" type="button" aria-label="Toggle navigation"><span></span><span></span><span></span></button>
+        <img class="fluss-brand-logo" src="https://fluss.apache.org/img/logo/svg/colored_logo_notext.svg" alt="Apache Fluss">
+        <div class="wordmark">Fluss Manager Web</div>
+      </div>
+      <div class="top-actions">
+        <button id="refresh" class="icon-button" title="Refresh metadata">Refresh</button>
+        <button id="logout" class="icon-button" title="Logout">Logout</button>
+        <div id="avatar" class="avatar">FM</div>
+      </div>
+    </header>
+
+    <aside class="sidebar">
+      <button id="cluster-nav" class="brand cluster-nav active" type="button">
+        <div>
+          <h1>Cluster</h1>
+          <p id="cluster-status">Disconnected</p>
+          <p id="cluster-sidebar-summary" class="cluster-sidebar-summary">No cluster selected</p>
+        </div>
+      </button>
+
+      <section>
+        <div class="section-title">Clusters</div>
+        <div id="cluster-list" class="nav-list"></div>
+        <button id="new-cluster" class="sidebar-action" type="button">Add cluster</button>
+      </section>
+
+      <section>
+        <div class="section-title">Databases</div>
+        <div id="database-list" class="nav-list"></div>
+        <button id="new-database" class="sidebar-action" type="button" disabled>Create database</button>
+      </section>
+    </aside>
+
+    <main class="workspace">
+      <section id="cluster-page" class="workspace-page">
+        <header class="topbar">
+        <div>
+          <p class="eyebrow">Apache Fluss</p>
+          <h2>Cluster</h2>
+        </div>
+        <div class="summary">
+          <div id="summary" class="summary"></div>
+          <button id="edit-cluster" class="secondary-button" type="button" disabled>Edit cluster</button>
+          <button id="delete-cluster" class="secondary-button danger" type="button" disabled>Delete cluster</button>
+        </div>
+      </header>
+
+        <section id="cluster-scale" class="cluster-scale empty">Select or create a cluster.</section>
+      </section>
+
+      <section id="explorer-page" class="workspace-page" hidden>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Apache Fluss</p>
+            <h2 id="page-title">Metadata Explorer</h2>
+          </div>
+          <div id="database-summary" class="summary"></div>
+        </header>
+
+        <section class="content-grid">
+          <div class="panel table-panel">
+            <div class="panel-header">
+              <h3>Tables</h3>
+              <span id="table-count">0</span>
+            </div>
+            <div class="table-search-wrap">
+              <input id="table-search" class="table-search" type="search" placeholder="Search tables" autocomplete="off" disabled>
+            </div>
+            <div class="panel-actions">
+              <button id="new-table" class="secondary-button" type="button" disabled>Create table</button>
+              <button id="delete-database" class="secondary-button danger" type="button" disabled>Delete database</button>
+            </div>
+            <div id="table-list" class="table-list empty">Select a database</div>
+          </div>
+
+          <div class="panel detail-panel">
+            <div class="panel-header">
+              <h3 id="detail-title">Table Detail</h3>
+              <div class="detail-tools">
+                <button id="show-query" class="secondary-button" type="button" hidden>Query</button>
+                <button id="show-preview" class="secondary-button" type="button" hidden>Preview</button>
+                <button id="show-ddl" class="secondary-button" type="button" hidden>DDL</button>
+                <button id="edit-table" class="secondary-button" type="button" hidden>Edit</button>
+                <button id="delete-table" class="secondary-button danger" type="button" hidden>Delete</button>
+                <span id="detail-badge">Idle</span>
+              </div>
+            </div>
+            <div id="detail" class="detail empty">Choose a table to inspect schema, keys, partitions, and properties.</div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </section>
+
+  <div id="ddl-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-ddl></div>
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="ddl-title">
+      <header class="modal-header">
+        <h3 id="ddl-title">Table DDL</h3>
+        <button id="close-ddl" class="icon-close" type="button" title="Close DDL">x</button>
+      </header>
+      <pre class="ddl-code"><code id="ddl-code"></code></pre>
+    </section>
+  </div>
+
+  <div id="preview-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-preview></div>
+    <section class="modal-card preview-card" role="dialog" aria-modal="true" aria-labelledby="preview-title">
+      <header class="modal-header">
+        <div>
+          <h3 id="preview-title">Data Preview</h3>
+          <p id="preview-meta" class="modal-subtitle">Latest 100 records</p>
+        </div>
+        <button id="close-preview" class="icon-close" type="button" title="Close preview">x</button>
+      </header>
+      <div id="preview-content" class="preview-content empty">Loading preview</div>
+    </section>
+  </div>
+
+  <div id="query-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-query></div>
+    <section class="modal-card preview-card" role="dialog" aria-modal="true" aria-labelledby="query-title">
+      <header class="modal-header">
+        <div>
+          <h3 id="query-title">Primary-key Query</h3>
+          <p id="query-meta" class="modal-subtitle">Fill primary key values to run an exact lookup.</p>
+        </div>
+        <button id="close-query" class="icon-close" type="button" title="Close query">x</button>
+      </header>
+      <form id="query-form" class="query-form">
+        <div id="query-pk-fields" class="query-pk-fields"></div>
+        <div class="query-controls">
+          <label class="query-control"><span>Order</span><select id="query-order-by" class="query-select"></select></label>
+          <label class="query-control compact"><span>Direction</span><select id="query-order-dir" class="query-select"><option value="ASC">ASC</option><option value="DESC">DESC</option></select></label>
+          <label class="query-control compact"><span>Limit</span><input id="query-limit" class="query-limit" type="number" min="1" max="500" value="100"></label>
+          <button id="run-query" class="secondary-button" type="submit">Run</button>
+        </div>
+      </form>
+      <div id="query-content" class="preview-content empty">Run a query to see rows.</div>
+    </section>
+  </div>
+
+  <div id="form-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-form></div>
+    <section class="modal-card form-card" role="dialog" aria-modal="true" aria-labelledby="form-title">
+      <header class="modal-header">
+        <div>
+          <h3 id="form-title">Form</h3>
+          <p id="form-subtitle" class="modal-subtitle"></p>
+        </div>
+        <button id="close-form" class="icon-close" type="button" title="Close form">x</button>
+      </header>
+      <form id="dynamic-form" class="dynamic-form"></form>
+    </section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

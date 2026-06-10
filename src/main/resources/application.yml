@@ -1,0 +1,14 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+fluss:
+  bootstrap-servers: ${FLUSS_BOOTSTRAP_SERVERS:localhost:9123}
+  security-protocol: ${FLUSS_SECURITY_PROTOCOL:}
+  sasl-mechanism: ${FLUSS_SASL_MECHANISM:}
+  sasl-username: ${FLUSS_SASL_USERNAME:}
+  sasl-password: ${FLUSS_SASL_PASSWORD:}
+
+app:
+  config-path: ${APP_CONFIG_PATH:./data/fluss-manager-web.json}
+  admin-username: ${ADMIN_USERNAME:admin}
+  admin-password: ${ADMIN_PASSWORD:admin}

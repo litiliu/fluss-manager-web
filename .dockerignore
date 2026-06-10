@@ -1,0 +1,7 @@
+.git
+.idea
+.playwright-mcp
+target
+*.iml
+*.log
+.DS_Store

@@ -1,0 +1,30 @@
+# Build output
+target/
+*.class
+
+# Logs
+*.log
+logs/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local runtime artifacts
+.playwright-mcp/
+data/
+
+# Maven wrapper/cache artifacts
+.mvn/wrapper/maven-wrapper.jar
+
+# Environment files
+.env
+.env.*
+
+# Docker temporary files
+docker-compose.override.yml
