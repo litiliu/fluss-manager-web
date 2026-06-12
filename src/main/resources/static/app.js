@@ -15,8 +15,18 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+const appBaseUrl = new URL(".", document.currentScript?.src || window.location.href);
+
+function appUrl(path) {
+  const value = String(path);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+    return value;
+  }
+  return new URL(value.replace(/^\/+/, ""), appBaseUrl).toString();
+}
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
+  const response = await fetch(appUrl(path), {
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
