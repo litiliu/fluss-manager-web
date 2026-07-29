@@ -1,6 +1,7 @@
 package org.apache.fluss.manager.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -27,6 +28,20 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 class SdkFlussMetadataServiceTest {
+
+    @Test
+    void rejectsDroppingDefaultDatabaseBeforeConnectingToCluster() {
+        ClusterConnectionProvider connectionProvider = mock(ClusterConnectionProvider.class);
+        SdkFlussMetadataService service = new SdkFlussMetadataService(connectionProvider);
+
+        assertThatThrownBy(() -> service.dropDatabase("cluster-1", "fluss", true, false))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessage(
+                        "Cannot drop the default database 'fluss'. "
+                                + "The default database is required for cluster operation.");
+
+        verify(connectionProvider, never()).get(any(String.class));
+    }
 
     @Test
     void fullPrimaryKeyQueryUsesPrimaryKeyLookuperWithoutLookupByEvenWithOrderBy() {

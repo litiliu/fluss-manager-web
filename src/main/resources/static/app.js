@@ -15,6 +15,8 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+const DEFAULT_DATABASE = "fluss";
+
 const appBaseUrl = new URL(".", document.currentScript?.src || window.location.href);
 
 function appUrl(path) {
@@ -295,7 +297,11 @@ async function loadTables(database) {
   $("table-count").textContent = "Loading";
   $("table-search").disabled = true;
   $("new-table").disabled = false;
-  $("delete-database").disabled = false;
+  const defaultDatabase = database === DEFAULT_DATABASE;
+  $("delete-database").disabled = defaultDatabase;
+  $("delete-database").title = defaultDatabase
+    ? "The default database is required for cluster operation and cannot be deleted."
+    : "";
   $("table-list").className = "table-list empty";
   $("table-list").textContent = "Loading tables";
   state.tables = await api(`${clusterBase()}/databases/${encodeURIComponent(database)}/tables`);
@@ -318,6 +324,7 @@ function renderNoDatabase() {
   $("table-search").disabled = true;
   $("new-table").disabled = true;
   $("delete-database").disabled = true;
+  $("delete-database").title = "";
   $("table-list").className = "table-list empty";
   $("table-list").textContent = "Select a database";
 }
@@ -354,11 +361,14 @@ function highlightMatch(value, filter) {
 
 async function selectTable(table) {
   state.selectedTable = table;
+  state.selectedDetail = null;
   document.querySelectorAll("[data-table]").forEach((button) => {
     button.classList.toggle("active", button.dataset.table === table);
   });
   $("detail-title").textContent = table;
   $("detail-badge").textContent = "Loading";
+  ["show-ddl", "show-preview", "show-query", "edit-table"].forEach((id) => ($(id).hidden = true));
+  $("delete-table").hidden = false;
   const detail = await api(`${clusterBase()}/databases/${encodeURIComponent(state.selectedDatabase)}/tables/${encodeURIComponent(table)}`);
   state.selectedDetail = detail;
   $("detail-badge").textContent = detail.stats?.available ? `${detail.stats.rowCount} rows` : "Metadata";
@@ -366,7 +376,6 @@ async function selectTable(table) {
   $("show-preview").hidden = false;
   $("show-query").hidden = !hasPrimaryKeys(detail);
   $("edit-table").hidden = false;
-  $("delete-table").hidden = false;
   renderQueryColumns(detail);
   renderDetail(detail);
 }
@@ -765,7 +774,11 @@ async function deleteCluster() {
 }
 
 async function deleteDatabase() {
-  if (!state.selectedDatabase || !confirm(`Delete database ${state.selectedDatabase}?`)) return;
+  if (!state.selectedDatabase) return;
+  if (state.selectedDatabase === DEFAULT_DATABASE) {
+    throw new Error("The default database 'fluss' is required for cluster operation and cannot be deleted.");
+  }
+  if (!confirm(`Delete database ${state.selectedDatabase}?`)) return;
   await api(`${clusterBase()}/databases/${encodeURIComponent(state.selectedDatabase)}?ignoreIfNotExists=true&cascade=false`, { method: "DELETE" });
   state.selectedDatabase = null;
   await loadClusterMetadata();

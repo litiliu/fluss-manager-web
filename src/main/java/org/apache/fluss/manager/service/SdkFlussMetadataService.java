@@ -47,6 +47,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class SdkFlussMetadataService implements FlussMetadataService {
 
+    private static final String DEFAULT_DATABASE_NAME = "fluss";
     private static final int DEFAULT_PREVIEW_LIMIT = 100;
     private static final int MAX_PREVIEW_LIMIT = 500;
     private static final int MAX_PREVIEW_SUBSCRIPTIONS = 256;
@@ -99,6 +100,12 @@ public class SdkFlussMetadataService implements FlussMetadataService {
 
     @Override
     public void dropDatabase(String clusterId, String database, boolean ignoreIfNotExists, boolean cascade) {
+        if (DEFAULT_DATABASE_NAME.equals(database)) {
+            throw new IllegalArgumentException(
+                    "Cannot drop the default database '"
+                            + database
+                            + "'. The default database is required for cluster operation.");
+        }
         withAdmin(
                 clusterId,
                 admin -> {

@@ -13,7 +13,11 @@ public class ApiExceptionHandler {
     @ExceptionHandler(Exception.class)
     ResponseEntity<Map<String, Object>> handle(Exception exception) {
         Throwable cause = unwrap(exception);
-        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+        HttpStatus status =
+                cause instanceof IllegalArgumentException
+                        ? HttpStatus.BAD_REQUEST
+                        : HttpStatus.BAD_GATEWAY;
+        return ResponseEntity.status(status)
                 .body(
                         Map.of(
                                 "error", cause.getClass().getSimpleName(),
