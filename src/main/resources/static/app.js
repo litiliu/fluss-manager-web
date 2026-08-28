@@ -428,7 +428,8 @@ function partitionsTable(partitions) {
 }
 
 function propertiesTable(properties) {
-  const entries = Object.entries(properties || {});
+  const entries = Object.entries(properties || {})
+    .filter(([key]) => key !== "table.datalake.iceberg.warehouse");
   if (!entries.length) {
     return `<p class="empty">No properties.</p>`;
   }
