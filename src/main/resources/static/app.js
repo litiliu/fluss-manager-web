@@ -305,7 +305,7 @@ async function loadTables(database) {
     : "";
   $("table-list").className = "table-list empty";
   $("table-list").textContent = "Loading tables";
-  state.tables = await api(`${clusterBase()}/databases/${encodeURIComponent(database)}/tables`);
+  state.tables = normalizeTables(await api(`${clusterBase()}/databases/${encodeURIComponent(database)}/tables`));
   $("table-search").disabled = state.tables.length === 0;
   renderTables();
 }
@@ -333,20 +333,33 @@ function renderNoDatabase() {
 function renderTables() {
   const filter = state.tableFilter.trim().toLowerCase();
   const filteredTables = filter
-    ? state.tables.filter((table) => table.toLowerCase().includes(filter))
+    ? state.tables.filter((table) => table.name.toLowerCase().includes(filter))
     : state.tables;
   $("table-count").textContent = filter ? `${filteredTables.length}/${state.tables.length}` : state.tables.length;
   $("table-list").className = filteredTables.length ? "table-list" : "table-list empty";
   $("table-list").innerHTML = filteredTables.length
     ? filteredTables.map((table) => `
-        <button class="table-item ${table === state.selectedTable ? "active" : ""}" data-table="${escapeHtml(table)}">
-          ${highlightMatch(table, state.tableFilter)}
+        <button class="table-item ${table.name === state.selectedTable ? "active" : ""}" data-table="${escapeHtml(table.name)}">
+          <span class="table-name">${highlightMatch(table.name, state.tableFilter)}</span>
+          <span class="table-size">${formatSize(table)}</span>
         </button>
       `).join("")
     : state.tables.length ? "No matching tables" : "No tables found";
   document.querySelectorAll("[data-table]").forEach((button) => {
     button.addEventListener("click", () => selectTable(button.dataset.table).catch(showDetailError));
   });
+}
+
+function normalizeTables(tables) {
+  return (tables || []).map((table) => {
+    if (typeof table === "string") {
+      return { name: table };
+    }
+    return {
+      ...table,
+      name: String(table.name || table.table || table.tableName || ""),
+    };
+  }).filter((table) => table.name);
 }
 
 function highlightMatch(value, filter) {
@@ -385,33 +398,57 @@ async function selectTable(table) {
 function renderDetail(detail) {
   $("detail").className = "detail";
   $("detail").innerHTML = `
-    <div class="metric-row">
-      <div class="metric"><strong>${escapeHtml(detail.numBuckets)}</strong><span>Buckets</span></div>
-      <div class="metric"><strong>${escapeHtml(detail.columns.length)}</strong><span>Columns</span></div>
-      <div class="metric"><strong>${detail.partitioned ? "Yes" : "No"}</strong><span>Partitioned</span></div>
-      <div class="metric"><strong>${detail.stats?.available ? escapeHtml(detail.stats.rowCount) : "N/A"}</strong><span>Rows</span></div>
-    </div>
-    <div class="kv">
+    <section class="detail-section">
+      <h3>Partitions</h3>
+      ${partitionsTable(detail.partitions)}
+    </section>
+    <section class="detail-section">
+      <h3>Overview</h3>
+      <div class="metric-row">
+        <div class="metric"><strong>${escapeHtml(detail.numBuckets)}</strong><span>Buckets</span></div>
+        <div class="metric"><strong>${escapeHtml(detail.columns.length)}</strong><span>Columns</span></div>
+        <div class="metric"><strong>${detail.partitioned ? "Yes" : "No"}</strong><span>Partitioned</span></div>
+        <div class="metric"><strong>${detail.stats?.available ? escapeHtml(detail.stats.rowCount) : "N/A"}</strong><span>Rows</span></div>
+      </div>
+    </section>
+    <section class="detail-section">
+      <h3>Metadata</h3>
+      <div class="kv">
       <div>Table ID</div><div><code>${escapeHtml(detail.tableId)}</code></div>
       <div>Schema ID</div><div><code>${escapeHtml(detail.schemaId)}</code></div>
       <div>Primary Keys</div><div>${chips(detail.primaryKeys)}</div>
       <div>Bucket Keys</div><div>${chips(detail.bucketKeys)}</div>
       <div>Partition Keys</div><div>${chips(detail.partitionKeys)}</div>
+      ${partitionKeyRows(detail)}
       <div>Created</div><div>${escapeHtml(detail.createdTime || "N/A")}</div>
       <div>Modified</div><div>${escapeHtml(detail.modifiedTime || "N/A")}</div>
       <div>Comment</div><div>${escapeHtml(detail.comment || "")}</div>
-    </div>
-    <h3>Columns</h3>
-    ${columnsTable(detail.columns)}
-    <h3>Partitions</h3>
-    ${partitionsTable(detail.partitions)}
-    <h3>Properties</h3>
-    ${propertiesTable(detail.properties)}
+      </div>
+    </section>
+    <section class="detail-section">
+      <h3>Columns</h3>
+      ${columnsTable(detail.columns)}
+    </section>
+    ${partitionExpressionsSection(detail.partitionExpressions)}
+    <section class="detail-section">
+      <h3>Properties</h3>
+      ${propertiesTable(detail.properties)}
+    </section>
   `;
 }
 
 function chips(values) {
   return values?.length ? values.map((value) => `<code>${escapeHtml(value)}</code>`).join(" ") : "None";
+}
+
+function partitionKeyRows(detail) {
+  if (!detail.partitionExpressions?.length) {
+    return "";
+  }
+  return `
+    <div>Physical Partition Keys</div><div>${chips(detail.physicalPartitionKeys)}</div>
+    <div>Virtual Partition Keys</div><div>${chips(detail.virtualPartitionKeys)}</div>
+  `;
 }
 
 function columnsTable(columns) {
@@ -424,9 +461,23 @@ function partitionsTable(partitions) {
   if (!partitions?.length) {
     return `<p class="empty">No partitions.</p>`;
   }
-  return `<table><thead><tr><th>ID</th><th>Name</th><th>Spec</th></tr></thead><tbody>
-    ${partitions.map((partition) => `<tr><td>${escapeHtml(partition.id)}</td><td>${escapeHtml(partition.name)}</td><td><code>${escapeHtml(partition.spec)}</code></td></tr>`).join("")}
+  return `<table class="partition-table"><thead><tr><th>ID</th><th>Name</th><th>Spec</th><th>Size</th></tr></thead><tbody>
+    ${partitions.map((partition) => `<tr><td>${escapeHtml(partition.id)}</td><td class="link-cell">${escapeHtml(partition.name)}</td><td><code>${escapeHtml(partition.spec)}</code></td><td class="size-cell">${formatSize(partition)}</td></tr>`).join("")}
   </tbody></table>`;
+}
+
+function partitionExpressionsSection(expressions) {
+  if (!expressions?.length) {
+    return "";
+  }
+  return `
+    <section class="detail-section">
+    <h3>Implicit Partition Expressions</h3>
+    <table><thead><tr><th>Key</th><th>Transform</th><th>Source</th><th>Time Unit</th><th>Time Zone</th></tr></thead><tbody>
+      ${expressions.map((expression) => `<tr><td><code>${escapeHtml(expression.key)}</code></td><td>${escapeHtml(expression.type)}</td><td><code>${escapeHtml(expression.sourceColumn || (expression.sourceColumns || []).join(", "))}</code></td><td>${escapeHtml(expression.timeUnit || "")}</td><td>${escapeHtml(expression.timeZone || "")}</td></tr>`).join("")}
+    </tbody></table>
+    </section>
+  `;
 }
 
 function propertiesTable(properties) {
@@ -448,22 +499,58 @@ function renderClusterScale(servers) {
     return;
   }
   const counts = serverTypeCounts(servers);
-  const types = orderedServerTypes(counts);
+  const coordinators = serversOfType(servers, "COORDINATOR");
+  const tabletServers = serversOfType(servers, "TABLET_SERVER");
   target.className = "cluster-scale";
   target.innerHTML = `
     <div class="cluster-metrics">
       <div class="cluster-metric"><strong>${servers.length}</strong><span>Total servers</span></div>
-      ${types.map((type) => `<div class="cluster-metric"><strong>${counts[type]}</strong><span>${escapeHtml(serverTypeLabel(type))}</span></div>`).join("")}
+      <div class="cluster-metric"><strong>${counts.COORDINATOR || 0}</strong><span>Coordinators</span></div>
+      <div class="cluster-metric"><strong>${counts.TABLET_SERVER || 0}</strong><span>Tablet Servers</span></div>
     </div>
-    <div class="server-list">
-      ${servers.slice().sort((a, b) => String(a.type).localeCompare(String(b.type)) || Number(a.id) - Number(b.id)).map((server) => `
-        <div class="server-node">
-          <span class="server-type">${escapeHtml(serverTypeLabel(server.type))}</span>
-          <code>${escapeHtml(server.host)}:${escapeHtml(server.port)}</code>
-          <span>#${escapeHtml(server.id)}</span>
-          ${server.rack ? `<span>${escapeHtml(server.rack)}</span>` : ""}
-        </div>`).join("")}
-    </div>`;
+    ${serverGroup("Coordinators", "Coordinates cluster metadata and control-plane work.", coordinators)}
+    ${serverGroup("Tablet Servers", "Stores table data and serves reads and writes.", tabletServers)}
+    ${otherServerGroups(servers)}`;
+}
+
+function serversOfType(servers, type) {
+  return (servers || []).filter((server) => server.type === type).sort(compareServers);
+}
+
+function compareServers(a, b) {
+  return Number(a.id) - Number(b.id) || String(a.host).localeCompare(String(b.host));
+}
+
+function serverGroup(title, description, servers) {
+  return `
+    <section class="server-section">
+      <div class="server-section-header">
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(description)}</p>
+      </div>
+      ${serverTable(servers)}
+    </section>`;
+}
+
+function otherServerGroups(servers) {
+  const extras = (servers || []).filter((server) => !["COORDINATOR", "TABLET_SERVER"].includes(server.type));
+  if (!extras.length) {
+    return "";
+  }
+  return serverGroup("Other Servers", "Additional Fluss server roles reported by the cluster.", extras.sort(compareServers));
+}
+
+function serverTable(servers) {
+  if (!servers.length) {
+    return `<p class="empty server-empty">No servers reported.</p>`;
+  }
+  return `
+    <table class="server-table">
+      <thead><tr><th>Server ID</th><th>Endpoint</th></tr></thead>
+      <tbody>
+        ${servers.map((server) => `<tr><td>#${escapeHtml(server.id)}</td><td class="link-cell">${escapeHtml(server.host)}:${escapeHtml(server.port)}</td></tr>`).join("")}
+      </tbody>
+    </table>`;
 }
 
 function serverTypeCounts(servers) {
@@ -474,15 +561,17 @@ function serverTypeCounts(servers) {
   }, {});
 }
 
-function orderedServerTypes(counts) {
-  const preferred = ["TABLET_SERVER", "COORDINATOR", "UNKNOWN"];
-  return [...preferred.filter((type) => counts[type] !== undefined), ...Object.keys(counts).filter((type) => !preferred.includes(type)).sort()];
-}
-
-function serverTypeLabel(type) {
-  if (type === "TABLET_SERVER") return "Tablet Servers";
-  if (type === "COORDINATOR") return "Coordinators";
-  return String(type || "UNKNOWN").toLowerCase().replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+function formatSize(value) {
+  if (value?.sizeBytes != null && Number.isFinite(Number(value.sizeBytes))) {
+    return `${(Number(value.sizeBytes) / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  }
+  if (value?.sizeGb != null && Number.isFinite(Number(value.sizeGb))) {
+    return `${Number(value.sizeGb).toFixed(2)} GB`;
+  }
+  if (value?.size != null && value.size !== "") {
+    return typeof value.size === "number" ? `${value.size.toFixed(2)} GB` : escapeHtml(value.size);
+  }
+  return "0.00 GB";
 }
 
 function showClusterPage() {

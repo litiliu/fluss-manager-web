@@ -92,6 +92,7 @@ class SdkFlussMetadataServiceTest {
                 new Configuration(),
                 new Configuration(),
                 "",
+                "",
                 1L,
                 1L);
     }

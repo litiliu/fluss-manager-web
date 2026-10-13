@@ -39,6 +39,8 @@ import org.apache.fluss.client.table.scanner.log.ScanRecords;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.metadata.DatabaseDescriptor;
 import org.apache.fluss.metadata.PartitionInfo;
+import org.apache.fluss.metadata.PartitionExpression;
+import org.apache.fluss.metadata.PartitionTransform;
 import org.apache.fluss.metadata.Schema;
 import org.apache.fluss.metadata.TableBucket;
 import org.apache.fluss.metadata.TableChange;
@@ -186,6 +188,9 @@ public class SdkFlussMetadataService implements FlussMetadataService {
             model.put("physicalPrimaryKeys", info.getPhysicalPrimaryKeys());
             model.put("bucketKeys", info.getBucketKeys());
             model.put("partitionKeys", info.getPartitionKeys());
+            model.put("physicalPartitionKeys", info.getPhysicalPartitionKeys());
+            model.put("virtualPartitionKeys", info.getVirtualPartitionKeys());
+            model.put("partitionExpressions", partitionExpressions(info.getPartitionExpressions()));
             model.put("numBuckets", info.getNumBuckets());
             model.put("partitioned", info.isPartitioned());
             model.put("autoPartitioned", info.isAutoPartitioned());
@@ -396,6 +401,25 @@ public class SdkFlussMetadataService implements FlussMetadataService {
                             return model;
                         })
                 .toList();
+    }
+
+    private List<Map<String, Object>> partitionExpressions(List<PartitionExpression> partitionExpressions) {
+        return partitionExpressions.stream().map(this::partitionExpressionModel).toList();
+    }
+
+    private Map<String, Object> partitionExpressionModel(PartitionExpression expression) {
+        Map<String, Object> model = new LinkedHashMap<>();
+        PartitionTransform transform = expression.getTransform();
+        model.put("key", expression.getVirtualPartitionSpecKey().orElse(""));
+        model.put("type", transform.getType().toString());
+        if (transform instanceof DateTruncPartitionTransform dateTrunc) {
+            model.put("sourceColumn", dateTrunc.getSourceColumn());
+            model.put("timeUnit", dateTrunc.getTimeUnit().toString());
+            model.put("timeZone", dateTrunc.getTimeZone().map(Object::toString).orElse(""));
+        } else {
+            model.put("sourceColumns", transform.getSourceColumns());
+        }
+        return model;
     }
 
     private List<Map<String, Object>> partitions(Admin admin, TablePath path, TableInfo info) {

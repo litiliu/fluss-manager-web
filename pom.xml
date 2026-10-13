@@ -13,7 +13,7 @@
     <properties>
         <java.version>17</java.version>
         <spring-boot.version>3.3.7</spring-boot.version>
-        <fluss.version>0.9.1-incubating</fluss.version>
+        <fluss.version>1.0-SNAPSHOT</fluss.version>
         <slf4j.legacy.version>1.7.36</slf4j.legacy.version>
         <jvm.add-opens>
             --add-opens=java.base/java.nio=ALL-UNNAMED
