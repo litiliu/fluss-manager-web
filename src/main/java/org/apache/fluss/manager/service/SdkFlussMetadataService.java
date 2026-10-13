@@ -1,5 +1,19 @@
 package org.apache.fluss.manager.service;
 
+import org.apache.fluss.manager.api.dto.LogInspection.BucketCursor;
+import org.apache.fluss.manager.api.dto.LogInspection.BucketOffset;
+import org.apache.fluss.manager.api.dto.LogInspection.BucketRange;
+import org.apache.fluss.manager.api.dto.LogInspection.LogRow;
+import org.apache.fluss.manager.api.dto.LogInspection.OffsetSnapshot;
+import org.apache.fluss.manager.api.dto.LogInspection.ReadRequest;
+import org.apache.fluss.manager.api.dto.LogInspection.ReadResult;
+import java.time.Duration;
+import java.util.Base64;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import org.apache.fluss.row.Decimal;
+
 import org.apache.fluss.manager.api.dto.AlterTableRequest;
 import org.apache.fluss.manager.api.dto.ColumnRequest;
 import org.apache.fluss.manager.api.dto.CreateDatabaseRequest;
@@ -900,6 +914,17 @@ public class SdkFlussMetadataService implements FlussMetadataService {
         return value;
     }
 
+
+    @Override
+    public OffsetSnapshot offsets(String clusterId, String database, String table) {
+        return new LogInspector(connectionProvider).offsets(clusterId, database, table);
+    }
+
+    @Override
+    public ReadResult readChangelog(String clusterId, String database, String table, ReadRequest request) {
+        return new LogInspector(connectionProvider).read(clusterId, database, table, request);
+    }
+
     private String ddl(TableInfo info) {
         List<String> definitions = new ArrayList<>();
         for (Schema.Column column : info.getSchema().getColumns()) {
@@ -1015,4 +1040,283 @@ public class SdkFlussMetadataService implements FlussMetadataService {
     }
 
     private record QueryPredicate(String column, String operator, String value) {}
+
+    /** Bounded, independent readers; all Fluss SDK access stays in this service. */
+    private static final class LogInspector {
+        private static final int MAX_BUCKETS = 256;
+        private static final java.lang.reflect.Method SCAN_PROGRESS = scanProgressMethod();
+        private final ClusterConnectionProvider connections;
+
+        private LogInspector(ClusterConnectionProvider connections) {
+            this.connections = connections;
+        }
+
+        public OffsetSnapshot offsets(String clusterId, String database, String tableName) {
+            String startedAt = Instant.now().toString();
+            long deadline = deadline(10_000);
+            TablePath path = TablePath.of(database, tableName);
+            try (Admin admin = connections.get(clusterId).getAdmin()) {
+                TableInfo info = await(admin.getTableInfo(path), deadline);
+                List<BucketOffset> buckets = bounds(admin, path, info, deadline).values().stream()
+                        .map(b -> new BucketOffset(text(b.bucket.getPartitionId()), b.partitionName,
+                                b.bucket.getBucket(), text(b.earliest), text(b.latest)))
+                        .toList();
+                return new OffsetSnapshot(clusterId, database, tableName, text(info.getTableId()),
+                        startedAt, Instant.now().toString(), buckets);
+            } catch (Exception exception) {
+                throw failure(exception);
+            }
+        }
+
+        public ReadResult read(String clusterId, String database, String tableName, ReadRequest request) {
+            if (request == null || request.ranges() == null || request.ranges().size() > MAX_BUCKETS) {
+                throw new IllegalArgumentException("Supply at most " + MAX_BUCKETS + " bucket ranges.");
+            }
+            int limit = bounded(request.limit(), 500, 1, 5000, "limit");
+            int timeoutMs = bounded(request.timeoutMs(), 5000, 100, 30_000, "timeoutMs");
+            long deadline = deadline(timeoutMs);
+            Connection connection = connections.get(clusterId);
+            TablePath path = TablePath.of(database, tableName);
+            try (Admin admin = connection.getAdmin(); Table table = connection.getTable(path)) {
+                TableInfo info = table.getTableInfo();
+                if (request.tableId() != null && !request.tableId().equals(text(info.getTableId()))) {
+                    throw new IllegalArgumentException("Table has changed; capture a new offset baseline.");
+                }
+                Map<TableBucket, Bounds> bounds = bounds(admin, path, info, deadline);
+                Map<TableBucket, Cursor> cursors = ranges(request.ranges(), info, bounds);
+                String capturedAt = Instant.now().toString();
+                List<LogRow> rows = new ArrayList<>();
+                if (!complete(cursors)) {
+                    InternalRow.FieldGetter[] getters = InternalRow.createFieldGetters(info.getRowType());
+                    try (LogScanner scanner = table.newScan().createLogScanner()) {
+                        for (Cursor cursor : cursors.values()) {
+                            if (!cursor.complete()) {
+                                if (cursor.bounds.bucket.getPartitionId() == null) {
+                                    scanner.subscribe(cursor.bounds.bucket.getBucket(), cursor.next);
+                                } else {
+                                    scanner.subscribe(cursor.bounds.bucket.getPartitionId(),
+                                            cursor.bounds.bucket.getBucket(), cursor.next);
+                                }
+                            }
+                        }
+                        while (!complete(cursors) && rows.size() < limit && System.nanoTime() < deadline) {
+                            long remaining = deadline - System.nanoTime();
+                            if (remaining <= 0) break;
+                            ScanRecords polled = scanner.poll(Duration.ofNanos(Math.min(remaining, 1_000_000_000L)));
+                            consume(polled, cursors, info, getters, rows, limit);
+                        }
+                    }
+                }
+                String status = complete(cursors) ? "COMPLETE"
+                        : rows.size() >= limit ? "TRUNCATED" : "TIMED_OUT";
+                return new ReadResult(clusterId, database, tableName, text(info.getTableId()),
+                        capturedAt, Instant.now().toString(), status, rows,
+                        cursors.values().stream().map(Cursor::model).toList());
+            } catch (Exception exception) {
+                throw failure(exception);
+            }
+        }
+
+        private static void consume(ScanRecords polled, Map<TableBucket, Cursor> cursors,
+                TableInfo info, InternalRow.FieldGetter[] getters, List<LogRow> rows, int limit) {
+            for (TableBucket bucket : polled.buckets()) {
+                Cursor cursor = cursors.get(bucket);
+                if (cursor == null || cursor.complete()) continue;
+                boolean fullyConsumed = true;
+                for (ScanRecord record : polled.records(bucket)) {
+                    if (record.logOffset() < cursor.next) continue;
+                    if (record.logOffset() >= cursor.end) {
+                        cursor.next = cursor.end;
+                        break;
+                    }
+                    if (rows.size() >= limit) {
+                        fullyConsumed = false;
+                        break;
+                    }
+                    Map<String, Object> values = new LinkedHashMap<>();
+                    for (int i = 0; i < getters.length; i++) {
+                        values.put(info.getSchema().getColumns().get(i).getName(),
+                                value(getters[i].getFieldOrNull(record.getRow())));
+                    }
+                    rows.add(new LogRow(text(bucket.getPartitionId()), bucket.getBucket(),
+                            text(record.logOffset()), text(record.timestamp()),
+                            Instant.ofEpochMilli(record.timestamp()).toString(),
+                            record.getChangeType().toString(), values));
+                    cursor.next = record.logOffset() + 1;
+                }
+                // Scanner progress also covers gaps/control records. Never apply it past a
+                // materialized row omitted because of the page limit.
+                Long consumedUpTo = consumedUpTo(polled, bucket);
+                if (fullyConsumed && consumedUpTo != null) {
+                    cursor.next = Math.max(cursor.next, Math.min(consumedUpTo, cursor.end));
+                }
+            }
+        }
+
+        private static Map<TableBucket, Cursor> ranges(
+                List<BucketRange> requested, TableInfo info, Map<TableBucket, Bounds> bounds) {
+            Map<TableBucket, Cursor> cursors = new LinkedHashMap<>();
+            for (BucketRange range : requested) {
+                if (range == null) throw new IllegalArgumentException("Bucket range must not be null.");
+                if (range.bucket() == null || range.bucket() < 0) {
+                    throw new IllegalArgumentException("Each range must specify a non-negative bucket ID.");
+                }
+                Long partitionId = range.partitionId() == null ? null : offset(range.partitionId());
+                TableBucket bucket = new TableBucket(info.getTableId(), partitionId, range.bucket());
+                Bounds bound = bounds.get(bucket);
+                if (bound == null || cursors.containsKey(bucket)) {
+                    throw new IllegalArgumentException("Unknown or duplicate bucket range: " + bucket);
+                }
+                long start = offset(range.startOffset());
+                long end = range.endOffset() == null ? bound.latest : offset(range.endOffset());
+                if (start < bound.earliest || end > bound.latest || start > end) {
+                    throw new IllegalArgumentException("Range must be within retained offsets ["
+                            + bound.earliest + ", " + bound.latest + "] for " + bucket
+                            + ". Capture a new baseline if logs have expired.");
+                }
+                cursors.put(bucket, new Cursor(bound, start, end));
+            }
+            return cursors;
+        }
+
+        private static Map<TableBucket, Bounds> bounds(
+                Admin admin, TablePath path, TableInfo info, long deadline) throws Exception {
+            List<PartitionInfo> partitions = info.isPartitioned()
+                    ? await(admin.listPartitionInfos(path), deadline) : List.of();
+            long bucketCount = (long) info.getNumBuckets() * (info.isPartitioned() ? partitions.size() : 1);
+            if (bucketCount > MAX_BUCKETS) {
+                throw new IllegalArgumentException("Table has " + bucketCount + " buckets; inspection supports at most "
+                        + MAX_BUCKETS + ". No buckets were silently omitted.");
+            }
+            List<Integer> buckets = new ArrayList<>();
+            for (int i = 0; i < info.getNumBuckets(); i++) buckets.add(i);
+            Map<TableBucket, Bounds> result = new LinkedHashMap<>();
+            if (info.isPartitioned()) {
+                for (PartitionInfo partition : partitions) {
+                    addBounds(admin, path, info.getTableId(), partition.getPartitionId(),
+                            partition.getPartitionName(), buckets, result, deadline);
+                }
+            } else {
+                addBounds(admin, path, info.getTableId(), null, null, buckets, result, deadline);
+            }
+            return result;
+        }
+
+        private static void addBounds(Admin admin, TablePath path, long tableId, Long partitionId,
+                String partitionName, List<Integer> buckets, Map<TableBucket, Bounds> result, long deadline)
+                throws Exception {
+            CompletableFuture<Map<Integer, Long>> earliest = partitionId == null
+                    ? admin.listOffsets(path, buckets, new OffsetSpec.EarliestSpec()).all()
+                    : admin.listOffsets(path, partitionName, buckets, new OffsetSpec.EarliestSpec()).all();
+            CompletableFuture<Map<Integer, Long>> latest = partitionId == null
+                    ? admin.listOffsets(path, buckets, new OffsetSpec.LatestSpec()).all()
+                    : admin.listOffsets(path, partitionName, buckets, new OffsetSpec.LatestSpec()).all();
+            Map<Integer, Long> starts = await(earliest, deadline);
+            Map<Integer, Long> ends = await(latest, deadline);
+            for (int bucket : buckets) {
+                if (!starts.containsKey(bucket) || !ends.containsKey(bucket)
+                        || starts.get(bucket) < 0 || starts.get(bucket) > ends.get(bucket)) {
+                    throw new IllegalStateException("Invalid offset response for bucket " + bucket);
+                }
+                TableBucket key = new TableBucket(tableId, partitionId, bucket);
+                result.put(key, new Bounds(key, partitionName, starts.get(bucket), ends.get(bucket)));
+            }
+        }
+
+        private static Object value(Object value) {
+            if (value instanceof BinaryString || value instanceof TimestampNtz || value instanceof TimestampLtz
+                    || value instanceof Decimal || value instanceof Long) return value.toString();
+            if (value instanceof byte[] bytes) return Base64.getEncoder().encodeToString(bytes);
+            return value;
+        }
+
+        private static boolean complete(Map<TableBucket, Cursor> cursors) {
+            return cursors.values().stream().allMatch(Cursor::complete);
+        }
+
+        private static java.lang.reflect.Method scanProgressMethod() {
+            try {
+                return ScanRecords.class.getMethod("consumedUpToOffset", TableBucket.class);
+            } catch (NoSuchMethodException exception) {
+                return null;
+            }
+        }
+
+        private static Long consumedUpTo(ScanRecords records, TableBucket bucket) {
+            if (SCAN_PROGRESS == null) return null;
+            try {
+                return (Long) SCAN_PROGRESS.invoke(records, bucket);
+            } catch (ReflectiveOperationException exception) {
+                throw new IllegalStateException("Failed to read scanner progress", exception);
+            }
+        }
+
+        private static String text(Object value) {
+            return value == null ? null : value.toString();
+        }
+
+        private static long offset(String text) {
+            if (text == null || !text.matches("[0-9]+")) {
+                throw new IllegalArgumentException("Offsets/partition IDs must be non-negative decimal strings.");
+            }
+            try {
+                return Long.parseLong(text);
+            } catch (NumberFormatException exception) {
+                throw new IllegalArgumentException("Offset/partition ID exceeds signed 64-bit range.");
+            }
+        }
+
+        private static int bounded(Integer value, int fallback, int min, int max, String name) {
+            int actual = value == null ? fallback : value;
+            if (actual < min || actual > max) {
+                throw new IllegalArgumentException(name + " must be between " + min + " and " + max + ".");
+            }
+            return actual;
+        }
+
+        private static long deadline(int timeoutMs) {
+            return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        }
+
+        private static <T> T await(CompletableFuture<T> future, long deadline) throws Exception {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) throw new TimeoutException("Offset capture timed out.");
+            return future.get(remaining, TimeUnit.NANOSECONDS);
+        }
+
+        private static RuntimeException failure(Exception exception) {
+            if (exception instanceof InterruptedException) Thread.currentThread().interrupt();
+            if (exception instanceof java.util.concurrent.ExecutionException && exception.getCause() != null) {
+                return new IllegalStateException("Log inspection failed", exception.getCause());
+            }
+            return exception instanceof RuntimeException runtime ? runtime
+                    : new IllegalStateException("Log inspection failed", exception);
+        }
+
+        private record Bounds(TableBucket bucket, String partitionName, long earliest, long latest) {}
+
+        private static final class Cursor {
+            private final Bounds bounds;
+            private final long start;
+            private final long end;
+            private long next;
+
+            private Cursor(Bounds bounds, long start, long end) {
+                this.bounds = bounds;
+                this.start = start;
+                this.end = end;
+                this.next = start;
+            }
+
+            private boolean complete() {
+                return next >= end;
+            }
+
+            private BucketCursor model() {
+                return new BucketCursor(text(bounds.bucket.getPartitionId()), bounds.partitionName,
+                        bounds.bucket.getBucket(), text(start), text(end), text(next), complete());
+            }
+        }
+    }
+
 }

@@ -14,6 +14,38 @@ Open source web manager for Apache Fluss clusters.
 - View schema, keys, buckets, partitions, properties, stats, and generated DDL
 - Preview recent table data
 - Run exact primary-key lookups through a generated form
+- Inspect PK-table changelogs and Log-table records with explicit bucket offsets
+
+## Read-only log inspection
+
+Select a table and open **Logs**. The **Offsets** tab shows every partition/bucket's
+earliest retained offset and latest exclusive offset, along with sampling times.
+Start offsets are editable; **Use latest as start** saves a baseline for subsequent
+writes. Optional sampling runs every five seconds without overlapping requests,
+stops when the dialog closes or a request fails, and retains up to 720 samples per
+session. CSV exports all saved samples.
+
+In **Changelog**, a read fixes an exclusive end offset for each requested bucket.
+**Continue fixed range** resumes at the returned next offsets while preserving the
+original ends. The view reports **Read complete**, **Page limit reached**, or
+**Timed out**. An empty complete range stays empty; it never falls back to a table
+snapshot. The result displays partition, bucket, offset, change type, timestamp,
+and the raw row. Reads are ordered within each bucket, with no global ordering
+implied between buckets. CSV exports every saved page; JSON includes all offset
+samples, page statuses, records, and read/continuation boundaries.
+
+The authenticated API provides `GET .../tables/{table}/offsets` and read-only
+`POST .../tables/{table}/changelog`. A read body contains `tableId`, `ranges`
+(`partitionId`, `bucket`, `startOffset`, optional `endOffset`), `limit` (1–5000),
+and `timeoutMs` (100–30000). An omitted end captures the latest offset at that read.
+Offsets and table/partition IDs use decimal strings to preserve 64-bit precision.
+Expired ranges, recreated tables, unknown/duplicate buckets, and tables with more
+than 256 partition/bucket combinations are rejected instead of silently skipping
+data. Each request closes its own scanner and table/admin resources.
+
+Scanner progress-only offsets are used when provided by the installed Fluss client,
+so gaps/control records can finish a range without being mistaken for log rows.
+CDC discard metrics and checkpoints still come from the CDC jobs' Flink APIs.
 
 ## Requirements
 

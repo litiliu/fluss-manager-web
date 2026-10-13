@@ -1,5 +1,9 @@
 package org.apache.fluss.manager.service;
 
+import org.apache.fluss.manager.api.dto.LogInspection.OffsetSnapshot;
+import org.apache.fluss.manager.api.dto.LogInspection.ReadRequest;
+import org.apache.fluss.manager.api.dto.LogInspection.ReadResult;
+
 import org.apache.fluss.manager.api.dto.AlterTableRequest;
 import org.apache.fluss.manager.api.dto.CreateDatabaseRequest;
 import org.apache.fluss.manager.api.dto.CreateTableRequest;
@@ -27,6 +31,10 @@ public interface FlussMetadataService {
     void dropTable(String clusterId, String database, String table, boolean ignoreIfNotExists);
 
     Map<String, Object> table(String clusterId, String database, String table);
+
+    OffsetSnapshot offsets(String clusterId, String database, String table);
+
+    ReadResult readChangelog(String clusterId, String database, String table, ReadRequest request);
 
     Map<String, Object> preview(String clusterId, String database, String table, int limit);
 

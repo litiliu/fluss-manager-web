@@ -55,6 +55,7 @@ function clusterBase() {
 }
 
 function showLogin(message = "") {
+  hideLogs();
   $("login-page").hidden = false;
   $("app-shell").hidden = true;
   $("login-error").textContent = message;
@@ -290,7 +291,7 @@ async function loadTables(database) {
   $("page-title").textContent = database;
   $("detail-title").textContent = "Table Detail";
   $("detail-badge").textContent = "Idle";
-  ["show-ddl", "show-preview", "show-query", "edit-table", "delete-table"].forEach((id) => ($(id).hidden = true));
+  ["show-logs", "show-ddl", "show-preview", "show-query", "edit-table", "delete-table"].forEach((id) => ($(id).hidden = true));
   state.selectedDetail = null;
   $("detail").className = "detail empty";
   $("detail").textContent = "Choose a table to inspect schema, keys, partitions, and properties.";
@@ -317,7 +318,7 @@ function renderNoDatabase() {
   $("page-title").textContent = "Metadata Explorer";
   $("detail-title").textContent = "Table Detail";
   $("detail-badge").textContent = "Idle";
-  ["show-ddl", "show-preview", "show-query", "edit-table", "delete-table"].forEach((id) => ($(id).hidden = true));
+  ["show-logs", "show-ddl", "show-preview", "show-query", "edit-table", "delete-table"].forEach((id) => ($(id).hidden = true));
   $("detail").className = "detail empty";
   $("detail").textContent = "Choose a database and table.";
   $("table-count").textContent = "0";
@@ -367,13 +368,14 @@ async function selectTable(table) {
   });
   $("detail-title").textContent = table;
   $("detail-badge").textContent = "Loading";
-  ["show-ddl", "show-preview", "show-query", "edit-table"].forEach((id) => ($(id).hidden = true));
+  ["show-logs", "show-ddl", "show-preview", "show-query", "edit-table"].forEach((id) => ($(id).hidden = true));
   $("delete-table").hidden = false;
   const detail = await api(`${clusterBase()}/databases/${encodeURIComponent(state.selectedDatabase)}/tables/${encodeURIComponent(table)}`);
   state.selectedDetail = detail;
   $("detail-badge").textContent = detail.stats?.available ? `${detail.stats.rowCount} rows` : "Metadata";
   $("show-ddl").hidden = !detail.ddl;
   $("show-preview").hidden = false;
+  $("show-logs").hidden = false;
   $("show-query").hidden = !hasPrimaryKeys(detail);
   $("edit-table").hidden = false;
   renderQueryColumns(detail);
@@ -488,7 +490,7 @@ function showClusterPage() {
   $("cluster-page").hidden = false;
   $("explorer-page").hidden = true;
   updateActiveNavigation();
-  hideDdl(); hidePreview(); hideQuery();
+  hideDdl(); hidePreview(); hideQuery(); hideLogs();
 }
 
 function showExplorerPage() {
@@ -528,6 +530,229 @@ async function showPreview() {
 
 function hidePreview() {
   $("preview-modal").hidden = true;
+}
+
+let logInspection = null;
+
+function bucketKey(bucket) {
+  return `${bucket.partitionId ?? "none"}:${bucket.bucket}`;
+}
+
+function hideLogs() {
+  if (logInspection) {
+    clearTimeout(logInspection.timer);
+    logInspection.abort.abort();
+    logInspection = null;
+  }
+  $("logs-modal").hidden = true;
+  document.body.classList.remove("logs-open");
+}
+
+function selectLogTab(changelog) {
+  $("logs-offsets-panel").hidden = changelog;
+  $("logs-changelog-panel").hidden = !changelog;
+  $("logs-offsets-tab").setAttribute("aria-pressed", String(!changelog));
+  $("logs-changelog-tab").setAttribute("aria-pressed", String(changelog));
+}
+
+async function showLogs() {
+  hideLogs();
+  const cluster = state.clusters.find((item) => item.id === state.selectedClusterId);
+  logInspection = {
+    base: `${clusterBase()}/databases/${encodeURIComponent(state.selectedDatabase)}/tables/${encodeURIComponent(state.selectedTable)}`,
+    clusterId: state.selectedClusterId, database: state.selectedDatabase, table: state.selectedTable,
+    abort: new AbortController(), history: [], pages: [], currentRows: [], starts: new Map(), snapshot: null,
+    timer: null, offsetBusy: false, readBusy: false,
+  };
+  $("logs-title").textContent = `${cluster?.name || state.selectedClusterId} · ${state.selectedDatabase}.${state.selectedTable}`;
+  $("logs-meta").textContent = "Read-only offsets and changelog";
+  $("logs-modal").hidden = false;
+  document.body.classList.add("logs-open");
+  $("sample-offsets").checked = false;
+  $("offsets-content").replaceChildren();
+  $("offsets-status").textContent = "Loading offsets…";
+  $("changelog-status").textContent = "Choose start offsets, then read.";
+  $("changelog-content").className = "preview-content empty";
+  $("changelog-content").textContent = "No read yet.";
+  $("changelog-cursors").replaceChildren();
+  ["export-offsets", "export-log-evidence", "export-changelog", "continue-changelog"].forEach((id) => ($(id).disabled = true));
+  selectLogTab(false);
+  await sampleOffsets();
+}
+
+function rememberStartOffsets(session) {
+  $("offsets-content").querySelectorAll("[data-offset-key]").forEach((input) => {
+    session.starts.set(input.dataset.offsetKey, input.value.trim());
+  });
+}
+
+async function sampleOffsets() {
+  const session = logInspection;
+  if (!session || session.offsetBusy) return;
+  if (session.history.length >= 720) {
+    $("sample-offsets").checked = false;
+    $("offsets-status").textContent = "Sampling stopped at 720 samples; export before starting a new session.";
+    return;
+  }
+  clearTimeout(session.timer);
+  session.offsetBusy = true;
+  const requestedAt = Date.now();
+  $("refresh-offsets").disabled = true;
+  try {
+    const snapshot = await api(`${session.base}/offsets`, { signal: session.abort.signal });
+    if (logInspection !== session) return;
+    if (session.snapshot && session.snapshot.tableId !== snapshot.tableId) {
+      throw new Error("Table was recreated. Close Logs and capture a new baseline.");
+    }
+    rememberStartOffsets(session);
+    session.snapshot = snapshot;
+    session.history.push(snapshot);
+    snapshot.buckets.forEach((bucket) => {
+      if (!session.starts.has(bucketKey(bucket))) session.starts.set(bucketKey(bucket), bucket.earliestOffset);
+    });
+    $("offsets-status").className = "logs-status";
+    $("offsets-status").textContent = `${snapshot.sampledAt} · ${snapshot.buckets.length} buckets · ${session.history.length} samples saved`;
+    renderOffsetSnapshot(session);
+    $("export-offsets").disabled = false;
+    $("export-log-evidence").disabled = false;
+    if (session.history.length >= 720 && $("sample-offsets").checked) {
+      $("sample-offsets").checked = false;
+      $("offsets-status").textContent += " · Sampling stopped at 720 samples; export before starting a new session.";
+    }
+  } catch (error) {
+    if (logInspection !== session || error.name === "AbortError") return;
+    $("sample-offsets").checked = false;
+    $("offsets-status").className = "logs-status error";
+    $("offsets-status").textContent = `Sampling stopped: ${error.message}`;
+  } finally {
+    session.offsetBusy = false;
+    if (logInspection === session) {
+      $("refresh-offsets").disabled = false;
+      if ($("sample-offsets").checked) {
+        session.timer = setTimeout(sampleOffsets, Math.max(0, 5000 - (Date.now() - requestedAt)));
+      }
+    }
+  }
+}
+
+function renderOffsetSnapshot(session) {
+  const buckets = session.snapshot.buckets;
+  if (!buckets.length) {
+    $("offsets-content").innerHTML = '<p class="empty">No partition buckets.</p>';
+    return;
+  }
+  $("offsets-content").innerHTML = `<table class="offsets-table"><thead><tr>
+    <th>Partition</th><th>Bucket</th><th>Earliest</th><th>Latest (exclusive)</th><th>Start offset</th>
+    </tr></thead><tbody>${buckets.map((bucket) => `<tr>
+      <td>${escapeHtml(bucket.partitionName || bucket.partitionId || "—")}</td><td>${bucket.bucket}</td>
+      <td>${escapeHtml(bucket.earliestOffset)}</td><td>${escapeHtml(bucket.latestOffset)}</td>
+      <td><input class="offset-input" inputmode="numeric" aria-label="Start offset for bucket ${escapeHtml(bucketKey(bucket))}"
+        data-offset-key="${escapeHtml(bucketKey(bucket))}" value="${escapeHtml(session.starts.get(bucketKey(bucket)))}"></td>
+    </tr>`).join("")}</tbody></table>`;
+}
+
+async function readChangelog(continuation = false) {
+  const session = logInspection;
+  if (!session || !session.snapshot || session.readBusy) return;
+  rememberStartOffsets(session);
+  const previous = session.pages.at(-1);
+  const ranges = continuation && previous
+    ? previous.cursors.map((cursor) => ({ partitionId: cursor.partitionId, bucket: cursor.bucket, startOffset: cursor.nextOffset, endOffset: cursor.endOffset }))
+    : session.snapshot.buckets.map((bucket) => ({ partitionId: bucket.partitionId, bucket: bucket.bucket, startOffset: session.starts.get(bucketKey(bucket)), endOffset: null }));
+  if (ranges.some((range) => !/^[0-9]+$/.test(range.startOffset))) {
+    selectLogTab(false);
+    $("offsets-status").textContent = "Each start offset must be a non-negative whole number.";
+    return;
+  }
+  session.readBusy = true;
+  $("read-changelog").disabled = true;
+  $("continue-changelog").disabled = true;
+  $("changelog-status").className = "logs-status";
+  $("changelog-status").textContent = "Reading fixed bucket ranges…";
+  try {
+    const result = await api(`${session.base}/changelog`, {
+      method: "POST", signal: session.abort.signal,
+      body: JSON.stringify({ tableId: session.snapshot.tableId, ranges,
+        limit: Number($("logs-limit").value), timeoutMs: Math.round(Number($("logs-timeout").value) * 1000) }),
+    });
+    if (logInspection !== session) return;
+    session.pages.push(result);
+    if (!continuation) {
+      session.currentRows = [];
+      session.rangeCapturedAt = result.capturedAt;
+    }
+    session.currentRows.push(...result.rows);
+    const statuses = { COMPLETE: "Read complete", TRUNCATED: "Page limit reached — continue to read remaining records", TIMED_OUT: "Timed out — continue from saved offsets" };
+    $("changelog-status").textContent = `${statuses[result.status] || result.status} · ${session.currentRows.length} records in this range (${result.rows.length} on this page) · ${result.finishedAt}`;
+    $("logs-meta").textContent = `End offsets fixed at ${session.rangeCapturedAt} · ${session.pages.length} pages saved for export`;
+    $("continue-changelog").disabled = result.status === "COMPLETE";
+    $("export-changelog").disabled = false;
+    $("export-log-evidence").disabled = false;
+    renderLogCursors(result.cursors);
+    renderLogRows(session.currentRows, result.status);
+  } catch (error) {
+    if (logInspection !== session || error.name === "AbortError") return;
+    $("changelog-status").className = "logs-status error";
+    $("changelog-status").textContent = `Read failed: ${error.message}`;
+    $("continue-changelog").disabled = !previous || previous.status === "COMPLETE";
+  } finally {
+    session.readBusy = false;
+    if (logInspection === session) $("read-changelog").disabled = false;
+  }
+}
+
+function renderLogCursors(cursors) {
+  $("changelog-cursors").innerHTML = `<table><thead><tr><th>Partition</th><th>Bucket</th><th>Start</th><th>End (exclusive)</th><th>Next</th><th>Status</th></tr></thead><tbody>
+    ${cursors.map((cursor) => `<tr><td>${escapeHtml(cursor.partitionName || cursor.partitionId || "—")}</td><td>${cursor.bucket}</td>
+      <td>${escapeHtml(cursor.startOffset)}</td><td>${escapeHtml(cursor.endOffset)}</td><td>${escapeHtml(cursor.nextOffset)}</td>
+      <td>${cursor.complete ? "Read complete" : "Remaining"}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function renderLogRows(rows, status) {
+  const target = $("changelog-content");
+  if (!rows.length) {
+    target.className = "preview-content empty";
+    target.textContent = status === "COMPLETE" ? "No log records in this range." : "No records returned yet. The range is incomplete; continue reading.";
+    return;
+  }
+  target.className = "preview-content";
+  target.innerHTML = `<div class="result-shell"><div class="result-grid"><table class="log-records-table"><thead><tr>
+    <th>Partition</th><th>Bucket</th><th>Offset</th><th>Change type</th><th>Timestamp</th><th>Row</th></tr></thead><tbody>
+    ${rows.map((row, index) => `<tr data-log-row="${index}"><td>${escapeHtml(row.partitionId || "—")}</td><td>${row.bucket}</td>
+      <td>${escapeHtml(row.offset)}</td><td>${escapeHtml(row.changeType)}</td><td>${escapeHtml(row.timestamp)}</td>
+      <td><code>${escapeHtml(JSON.stringify(row.row))}</code></td></tr>`).join("")}</tbody></table></div>
+    <aside class="row-inspector"><div class="inspector-header">Selected record</div><pre class="inspector-body"></pre></aside></div>`;
+  target.querySelector(".inspector-body").textContent = JSON.stringify(rows[0], null, 2);
+  target.querySelectorAll("[data-log-row]").forEach((element) => element.addEventListener("click", () => {
+    target.querySelectorAll("[data-log-row]").forEach((row) => row.classList.remove("selected"));
+    element.classList.add("selected");
+    target.querySelector(".inspector-body").textContent = JSON.stringify(rows[Number(element.dataset.logRow)], null, 2);
+  }));
+}
+
+function downloadLogEvidence(kind) {
+  const session = logInspection;
+  if (!session) return;
+  const csv = (rows) => rows.map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\r\n");
+  let contents;
+  if (kind === "json") {
+    contents = JSON.stringify({ schemaVersion: 1, clusterId: session.clusterId, database: session.database,
+      table: session.table, offsetSamples: session.history, reads: session.pages }, null, 2);
+  } else if (kind === "offsets") {
+    contents = csv([["cluster", "database", "table", "tableId", "startedAt", "sampledAt", "partitionId", "partitionName", "bucket", "earliest", "latest"],
+      ...session.history.flatMap((sample) => sample.buckets.map((bucket) => [sample.clusterId, sample.database, sample.table, sample.tableId,
+        sample.startedAt, sample.sampledAt, bucket.partitionId, bucket.partitionName, bucket.bucket, bucket.earliestOffset, bucket.latestOffset]))]);
+  } else {
+    contents = csv([["cluster", "database", "table", "tableId", "capturedAt", "finishedAt", "status", "partitionId", "bucket", "offset", "timestampMillis", "changeType", "rowJson"],
+      ...session.pages.flatMap((page) => page.rows.map((row) => [page.clusterId, page.database, page.table, page.tableId, page.capturedAt,
+        page.finishedAt, page.status, row.partitionId, row.bucket, row.offset, row.timestampMillis, row.changeType, JSON.stringify(row.row)]))]);
+  }
+  const url = URL.createObjectURL(new Blob([contents], { type: kind === "json" ? "application/json" : "text/csv;charset=utf-8" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `fluss-${session.table.replace(/[^a-zA-Z0-9_-]/g, "_")}-${kind}-${Date.now()}.${kind === "json" ? "json" : "csv"}`;
+  anchor.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function showQuery() {
@@ -941,6 +1166,27 @@ $("delete-table").addEventListener("click", () => deleteTable().catch(showDetail
 $("edit-table").addEventListener("click", openEditTableForm);
 $("show-ddl").addEventListener("click", showDdl);
 $("show-preview").addEventListener("click", () => showPreview().catch(showPreviewError));
+$("show-logs").addEventListener("click", showLogs);
+$("close-logs").addEventListener("click", hideLogs);
+$("logs-modal").querySelector("[data-close-logs]").addEventListener("click", hideLogs);
+$("logs-offsets-tab").addEventListener("click", () => selectLogTab(false));
+$("logs-changelog-tab").addEventListener("click", () => selectLogTab(true));
+$("refresh-offsets").addEventListener("click", sampleOffsets);
+$("sample-offsets").addEventListener("change", () => {
+  if (!logInspection) return;
+  clearTimeout(logInspection.timer);
+  if ($("sample-offsets").checked) sampleOffsets();
+});
+$("use-latest-offsets").addEventListener("click", () => {
+  if (!logInspection?.snapshot) return;
+  logInspection.snapshot.buckets.forEach((bucket) => logInspection.starts.set(bucketKey(bucket), bucket.latestOffset));
+  renderOffsetSnapshot(logInspection);
+});
+$("logs-read-form").addEventListener("submit", (event) => { event.preventDefault(); readChangelog(); });
+$("continue-changelog").addEventListener("click", () => readChangelog(true));
+$("export-offsets").addEventListener("click", () => downloadLogEvidence("offsets"));
+$("export-log-evidence").addEventListener("click", () => downloadLogEvidence("json"));
+$("export-changelog").addEventListener("click", () => downloadLogEvidence("changelog"));
 $("show-query").addEventListener("click", showQuery);
 $("close-ddl").addEventListener("click", hideDdl);
 $("close-preview").addEventListener("click", hidePreview);
@@ -960,7 +1206,7 @@ $("table-search").addEventListener("input", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
-    hideDdl(); hidePreview(); hideQuery(); hideForm();
+    hideDdl(); hidePreview(); hideQuery(); hideForm(); hideLogs();
   }
 });
 

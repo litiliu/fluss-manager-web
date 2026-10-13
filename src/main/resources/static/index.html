@@ -102,6 +102,7 @@
             <div class="panel-header">
               <h3 id="detail-title">Table Detail</h3>
               <div class="detail-tools">
+                <button id="show-logs" class="secondary-button" type="button" hidden>Logs</button>
                 <button id="show-query" class="secondary-button" type="button" hidden>Query</button>
                 <button id="show-preview" class="secondary-button" type="button" hidden>Preview</button>
                 <button id="show-ddl" class="secondary-button" type="button" hidden>DDL</button>
@@ -162,6 +163,44 @@
         </div>
       </form>
       <div id="query-content" class="preview-content empty">Run a query to see rows.</div>
+    </section>
+  </div>
+
+  <div id="logs-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-logs></div>
+    <section class="modal-card preview-card" role="dialog" aria-modal="true" aria-labelledby="logs-title">
+      <header class="modal-header">
+        <div><h3 id="logs-title">Table Logs</h3><p id="logs-meta" class="modal-subtitle">Read-only offsets and changelog</p></div>
+        <button id="close-logs" class="icon-close" type="button" title="Close logs">x</button>
+      </header>
+      <nav class="logs-tabs" aria-label="Log views">
+        <button id="logs-offsets-tab" type="button" aria-pressed="true">Offsets</button>
+        <button id="logs-changelog-tab" type="button" aria-pressed="false">Changelog</button>
+      </nav>
+      <section id="logs-offsets-panel" class="logs-panel">
+        <div class="logs-toolbar">
+          <button id="refresh-offsets" class="secondary-button" type="button">Sample now</button>
+          <label class="sampling-toggle"><input id="sample-offsets" type="checkbox">Sample every 5 seconds</label>
+          <button id="use-latest-offsets" class="secondary-button" type="button">Use latest as start</button>
+          <button id="export-offsets" class="secondary-button" type="button" disabled>Export CSV</button>
+          <button id="export-log-evidence" class="secondary-button" type="button" disabled>Export JSON</button>
+        </div>
+        <p id="offsets-status" class="logs-status" role="status">Loading offsets…</p>
+        <div id="offsets-content" class="logs-grid"></div>
+      </section>
+      <section id="logs-changelog-panel" class="logs-panel" hidden>
+        <form id="logs-read-form" class="logs-toolbar">
+          <label>Page size<input id="logs-limit" class="query-limit" type="number" min="1" max="5000" value="500"></label>
+          <label>Timeout (seconds)<input id="logs-timeout" class="query-limit" type="number" min="0.1" max="30" step="0.1" value="5"></label>
+          <button id="read-changelog" class="secondary-button" type="submit">Read from start offsets</button>
+          <button id="continue-changelog" class="secondary-button" type="button" disabled>Continue fixed range</button>
+          <button id="export-changelog" class="secondary-button" type="button" disabled>Export CSV</button>
+        </form>
+        <p class="logs-hint">Set start offsets in the Offsets tab. Each read fixes an exclusive end offset per bucket; Continue keeps those ends.</p>
+        <p id="changelog-status" class="logs-status" role="status">Choose start offsets, then read.</p>
+        <details class="logs-cursors"><summary>Read boundaries and next offsets</summary><div id="changelog-cursors"></div></details>
+        <div id="changelog-content" class="preview-content empty">No read yet.</div>
+      </section>
     </section>
   </div>
 
