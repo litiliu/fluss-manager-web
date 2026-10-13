@@ -470,8 +470,12 @@ public class SdkFlussMetadataService implements FlussMetadataService {
             try (BatchScanner scanner = table.newScan().limit(previewLimit).createBatchScanner(bucket)) {
                 int emptyPolls = 0;
                 while (rows.size() < previewLimit && emptyPolls < EMPTY_POLL_LIMIT) {
-                    try (org.apache.fluss.utils.CloseableIterator<InternalRow> batch =
-                            scanner.pollBatch(java.time.Duration.ofSeconds(1))) {
+                    org.apache.fluss.utils.CloseableIterator<InternalRow> batch =
+                            scanner.pollBatch(java.time.Duration.ofSeconds(1));
+                    if (batch == null) {
+                        break;
+                    }
+                    try (batch) {
                         if (!batch.hasNext()) {
                             emptyPolls++;
                             continue;
