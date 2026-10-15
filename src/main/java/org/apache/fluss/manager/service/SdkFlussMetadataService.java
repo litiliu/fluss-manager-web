@@ -38,6 +38,7 @@ import org.apache.fluss.client.table.scanner.log.LogScanner;
 import org.apache.fluss.client.table.scanner.log.ScanRecords;
 import org.apache.fluss.cluster.ServerNode;
 import org.apache.fluss.metadata.DatabaseDescriptor;
+import org.apache.fluss.metadata.DateTruncPartitionTransform;
 import org.apache.fluss.metadata.PartitionInfo;
 import org.apache.fluss.metadata.PartitionExpression;
 import org.apache.fluss.metadata.PartitionTransform;

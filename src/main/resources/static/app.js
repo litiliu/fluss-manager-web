@@ -920,7 +920,7 @@ function renderResultTable(targetId, result) {
     target.textContent = "No records found.";
     return;
   }
-  const columns = result.columns.map((column) => column.name);
+  const columns = orderResultColumns(result);
   target.className = "preview-content";
   target.innerHTML = `
     <div class="result-shell">
@@ -930,15 +930,37 @@ function renderResultTable(targetId, result) {
           <tbody>${result.rows.map((row, index) => `<tr data-row-index="${index}" class="${index === 0 ? "selected" : ""}">${columns.map((column) => previewCell(row[column])).join("")}</tr>`).join("")}</tbody>
         </table>
       </div>
-      <aside class="row-inspector"><div class="inspector-header">Selected row</div><pre class="inspector-body">${escapeHtml(JSON.stringify(result.rows[0], null, 2))}</pre></aside>
+      <aside class="row-inspector"><div class="inspector-header">Selected row</div><pre class="inspector-body">${escapeHtml(JSON.stringify(orderResultRow(result.rows[0], columns), null, 2))}</pre></aside>
     </div>`;
   target.querySelectorAll("[data-row-index]").forEach((rowElement) => {
     rowElement.addEventListener("click", () => {
       target.querySelectorAll("[data-row-index]").forEach((element) => element.classList.remove("selected"));
       rowElement.classList.add("selected");
-      target.querySelector(".inspector-body").textContent = JSON.stringify(result.rows[Number(rowElement.dataset.rowIndex)], null, 2);
+      target.querySelector(".inspector-body").textContent = JSON.stringify(
+        orderResultRow(result.rows[Number(rowElement.dataset.rowIndex)], columns), null, 2);
     });
   });
+}
+
+function orderResultColumns(result) {
+  const nonEmptyColumns = new Set();
+  (result.rows || []).forEach((row) => {
+    Object.entries(row).forEach(([name, value]) => {
+      if (value !== null && value !== undefined) nonEmptyColumns.add(name);
+    });
+  });
+  const group = (name) => {
+    if (!name.startsWith("_")) return 0;
+    return nonEmptyColumns.has(name) ? 1 : 2;
+  };
+  return result.columns
+    .map((column, index) => ({ name: column.name, index }))
+    .sort((left, right) => group(left.name) - group(right.name) || left.index - right.index)
+    .map((column) => column.name);
+}
+
+function orderResultRow(row, columns) {
+  return Object.fromEntries(columns.map((column) => [column, row[column]]));
 }
 
 function previewCell(value) {
