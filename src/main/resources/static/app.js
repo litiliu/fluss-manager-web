@@ -846,7 +846,8 @@ function downloadLogEvidence(kind) {
 
 function showQuery() {
   if (!hasPrimaryKeys(state.selectedDetail)) return;
-  $("query-title").textContent = `${state.selectedDatabase}.${state.selectedTable} Query`;
+  const cluster = state.clusters.find((item) => item.id === state.selectedClusterId);
+  $("query-title").textContent = `${cluster?.name || state.selectedClusterId} · ${state.selectedDatabase}.${state.selectedTable} Query`;
   $("query-meta").textContent = "Fill primary key values to run an exact lookup.";
   $("query-content").className = "preview-content empty";
   $("query-content").textContent = "Run a query to see rows.";
